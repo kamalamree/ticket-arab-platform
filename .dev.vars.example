@@ -1,0 +1,21 @@
+SESSION_SECRET=generate-a-random-secret-of-at-least-32-bytes
+DATA_ENCRYPTION_KEY=generate-a-different-random-secret-of-at-least-32-bytes
+PAYPAL_ENV=sandbox
+PAYPAL_CLIENT_ID=
+PAYPAL_CLIENT_SECRET=
+PAYMEGATE_API_KEY=
+PAYMEGATE_WEBHOOK_SECRET=
+SUPPORT_EMAIL=
+BREVO_API_KEY=
+SMTP2GO_API_KEY=
+RESEND_API_KEY=
+
+# Optional generic SMTP provider (use the admin settings for encrypted credentials).
+SMTP_PROVIDER_NAME=
+SMTP_HOST=
+SMTP_PORT=587
+SMTP_TLS_MODE=auto
+SMTP_SECURE=false
+SMTP_USER=
+SMTP_PASSWORD=
+MAIL_FROM=

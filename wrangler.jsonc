@@ -1,0 +1,23 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "ticket-arab",
+  "account_id": "ca44a9729a53a566093085cb0974b8e0",
+  "main": "server/worker.mjs",
+  "compatibility_date": "2026-10-19",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/*"]
+  },
+  "hyperdrive": [
+    {
+      "binding": "HYPERDRIVE",
+      "id": "59c417b40a8c4521bf766b1444b98212"
+    }
+  ],
+  "vars": {
+    "NODE_ENV": "production"
+  }
+}
