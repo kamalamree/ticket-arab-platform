@@ -1,7 +1,7 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "ticket-arab-platform",
-  "account_id": "c354b18771e5bec8670a4b5f15944532",0",
+  "account_id": "c354b18771e5bec8670a4b5f15944532",
   "main": "server/worker.mjs",
   "compatibility_date": "2026-10-19",
   "compatibility_flags": ["nodejs_compat"],
