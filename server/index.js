@@ -373,7 +373,7 @@ app.get('/api/admin/analytics',requireAdmin,asyncRoute(async(req,res)=>{await en
   pool.query(`SELECT * FROM (SELECT DISTINCT ON (ip_address) ip_address,country_code,country_name,region,city,device_type,path,created_at FROM visitor_events WHERE created_at>=now()-$1::interval ORDER BY ip_address,created_at DESC) recent ORDER BY created_at DESC LIMIT $2 OFFSET $3`,[interval,pageSize,(page-1)*pageSize])
 ]);res.json({range,totals:totals.rows[0],series:series.rows,countries:countries.rows,places:places.rows,ips:ips.rows,ip_total:ipCount.rows[0].total,ip_page:page,ip_page_size:pageSize});}));
 app.get('/api/events', asyncRoute(async (_req, res) => {
-  const { rows } = await pool.query(`SELECT e.*, COALESCE((SELECT json_agg(json_build_object('id',t.id,'name',t.name,'price',t.price,'currency',t.currency,'available',GREATEST(t.quantity_available-t.quantity_sold-t.quantity_reserved,0)) ORDER BY CASE t.name WHEN 'Bronze' THEN 1 WHEN 'Regular' THEN 1 WHEN 'Silver' THEN 2 WHEN 'Gold' THEN 3 WHEN 'Diamond / Fan Pit' THEN 4 WHEN 'Platinum' THEN 4 WHEN 'Premium' THEN 5 WHEN 'Premium Diamond' THEN 6 WHEN 'Premium VIP' THEN 6 WHEN 'VIP' THEN 7 ELSE 99 END,t.price) FROM ticket_types t WHERE t.event_id=e.id AND t.is_active=true AND e.is_active=true),'[]') ticket_types FROM events e WHERE e.is_active=true ORDER BY e.event_date`);
+  const { rows } = await pool.query(`SELECT e.*, COALESCE((SELECT json_agg(json_build_object('id',t.id,'name',t.name,'price',t.price,'currency',t.currency,'available',GREATEST(t.quantity_available-t.quantity_sold-t.quantity_reserved,0)) ORDER BY CASE t.name WHEN 'Bronze' THEN 1 WHEN 'Regular' THEN 1 WHEN 'Silver' THEN 2 WHEN 'Gold' THEN 3 WHEN 'Diamond / Fan Pit' THEN 4 WHEN 'Platinum' THEN 4 WHEN 'Premium' THEN 5 WHEN 'Premium Diamond' THEN 6 WHEN 'Premium VIP' THEN 6 WHEN 'VIP' THEN 7 ELSE 99 END,t.price) FROM ticket_types t WHERE t.event_id=e.id AND t.is_active=true AND e.is_active=true),'[]') ticket_types FROM events e WHERE e.is_active=true AND e.event_date>now() ORDER BY e.event_date`);
   res.json({ events: rows });
 }));
 app.post('/api/admin/login', limitAdminLogin, asyncRoute(async (req, res) => {
@@ -1047,7 +1047,7 @@ app.post('/api/checkout', asyncRoute(async (req, res) => {
   if (!hasEmailTransport(settings)) return res.status(503).json({ error: emailRuntimeError(settings) });
   const ids = requestedItems.map(item=>item.id);
   const listed = (await pool.query('SELECT t.id,t.event_id,t.price,t.currency FROM ticket_types t JOIN events e ON e.id=t.event_id WHERE t.id=ANY($1::uuid[]) AND t.is_active AND e.is_active AND e.event_date>now()', [ids])).rows;
-  if (listed.length !== requestedItems.length) return res.status(409).json({ error: 'إحدى فئات التذاكر لم تعد متاحة.' });
+  if (listed.length !== requestedItems.length) return res.status(409).json({ error: 'انتهى موعد الحفل أو لم تعد فئة التذكرة متاحة. حدّث الصفحة واختر حفلًا قادمًا.' });
   const displayCurrency = String(listed[0].currency).trim().toUpperCase();
   if (listed.some(row=>row.event_id!==listed[0].event_id||String(row.currency).trim().toUpperCase()!==displayCurrency)) return res.status(400).json({ error: 'يجب أن تكون التذاكر المختارة من الحفلة نفسها وبالعملة نفسها.' });
   let fx; const chargeCurrency = 'USD';
