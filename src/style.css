@@ -59,6 +59,9 @@ h1,h2,h3,h4{font-family:inherit;line-height:1.4}
 .paypal-funding-button[hidden]{display:none}
 .paypal-funding-button:empty{display:none}
 .paypal-funding-button iframe{max-width:100%!important}
+.paypal-button-settings{margin:14px 0 4px;padding:13px;border:1px solid #ffffff16;border-radius:9px;background:#0c1723}
+.paypal-button-settings h4{margin:0 0 10px;color:#e4ce94;font-size:11px}
+.paypal-button-settings .check-setting{margin:8px 0;color:#d3d9df;font-size:11px}
 .paypal-wallet-options{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr));gap:12px;align-items:center;margin:12px 0 6px}
 .payment-alternatives{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr));gap:10px;align-items:center;margin:4px 0 2px}
 #paypal-button-container{grid-column:1/-1;min-height:44px;display:grid;align-items:center}

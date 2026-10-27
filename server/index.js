@@ -130,6 +130,9 @@ async function getIntegrationSettings() {
     paypalCardButtonText: String(stored.paypalCardButtonText || 'Visa').trim().slice(0, 32) || 'Visa',
     paypalApplePayDomainFile: stored.paypalApplePayDomainFile || '',
     paypalEnabled: stored.paypalEnabled ?? true,
+    paypalWalletButtonEnabled: stored.paypalWalletButtonEnabled ?? true,
+    paypalPayLaterButtonEnabled: stored.paypalPayLaterButtonEnabled ?? true,
+    paypalCardButtonEnabled: stored.paypalCardButtonEnabled ?? true,
     paymegateEnabled: stored.paymegateEnabled ?? false,
     paymegateApiKey: stored.paymegateApiKey || process.env.PAYMEGATE_API_KEY || '',
     paymegateWebhookSecret: stored.paymegateWebhookSecret || process.env.PAYMEGATE_WEBHOOK_SECRET || '',
@@ -347,7 +350,7 @@ app.get('/api/health', asyncRoute(async (_req, res) => {
 }));
 app.get('/api/payment-methods',asyncRoute(async(_req,res)=>{
   const s=await getIntegrationSettings();
-  const paypal=s.paypalEnabled&&Boolean(s.paypalClientId&&s.paypalClientSecret);
+  const paypal=s.paypalEnabled&&Boolean(s.paypalClientId&&s.paypalClientSecret)&&(s.paypalWalletButtonEnabled||s.paypalPayLaterButtonEnabled||s.paypalCardButtonEnabled);
   let paypalClientToken='';
   if(paypal)try{
     const pp=await paypalToken(s);
@@ -356,7 +359,7 @@ app.get('/api/payment-methods',asyncRoute(async(_req,res)=>{
     if(tokenResponse.ok&&tokenData.client_token)paypalClientToken=tokenData.client_token;
     else console.warn('PayPal client token request failed:',tokenData.name||tokenData.message||tokenResponse.status);
   }catch(error){console.warn('PayPal client token setup failed:',String(error?.message||error).slice(0,250));}
-  res.set('Cache-Control','no-store').json({paypal,paypalClientId:paypal?s.paypalClientId:'',paypalClientToken,paypalSandbox:s.paypalEnv!=='live',paypalCardButtonText:s.paypalCardButtonText||'Visa',paymegate:s.paymegateEnabled&&Boolean(s.paymegateApiKey&&s.paymegateWebhookSecret&&process.env.FRONTEND_ORIGIN?.startsWith('https://')),heleket:s.heleketEnabled&&Boolean(s.heleketMerchantId&&s.heleketPaymentApiKey&&process.env.FRONTEND_ORIGIN?.startsWith('https://')),logos:{paypal:s.paypalLogo,paymegate:s.paymegateLogo,heleket:s.heleketLogo}});
+  res.set('Cache-Control','no-store').json({paypal,paypalClientId:paypal?s.paypalClientId:'',paypalClientToken,paypalSandbox:s.paypalEnv!=='live',paypalCardButtonText:s.paypalCardButtonText||'Visa',paypalFunding:{paypal:paypal&&s.paypalWalletButtonEnabled,paylater:paypal&&s.paypalPayLaterButtonEnabled,card:paypal&&s.paypalCardButtonEnabled},paymegate:s.paymegateEnabled&&Boolean(s.paymegateApiKey&&s.paymegateWebhookSecret&&process.env.FRONTEND_ORIGIN?.startsWith('https://')),heleket:s.heleketEnabled&&Boolean(s.heleketMerchantId&&s.heleketPaymentApiKey&&process.env.FRONTEND_ORIGIN?.startsWith('https://')),logos:{paypal:s.paypalLogo,paymegate:s.paymegateLogo,heleket:s.heleketLogo}});
 }));
 app.get('/api/public/seo',asyncRoute(async(_req,res)=>{const settings=await getIntegrationSettings();res.set('Cache-Control','no-store');res.json(publicSeoSettings(settings.seo));}));
 app.get('/robots.txt',asyncRoute(async(_req,res)=>{const settings=await getIntegrationSettings();const seo=publicSeoSettings(settings.seo);res.type('text/plain').set('Cache-Control','public, max-age=300').send(`User-agent: *\nAllow: /\nDisallow: /admin\nDisallow: /api/\nDisallow: /webhooks/\nDisallow: /support\nDisallow: /checkout/\n${seo.allowIndex?'Sitemap: '+seo.siteUrl+'/sitemap.xml\n':'# Indexing disabled by site owner\n'}`);}));
@@ -503,7 +506,7 @@ app.delete('/api/admin/events/:id', requireAdmin, asyncRoute(async (req, res) =>
 
 app.get('/api/admin/settings', requireAdmin, asyncRoute(async (_req, res) => {
   const settings = await getIntegrationSettings();
-  res.json({ paypal: { configured: Boolean(settings.paypalClientId && settings.paypalClientSecret), enabled: settings.paypalEnabled, mode: settings.paypalEnv, cardButtonText: settings.paypalCardButtonText || 'Visa', clientIdHint: settings.paypalClientId ? `••••${settings.paypalClientId.slice(-4)}` : '', logo: settings.paypalLogo, applePayDomainConfigured: Boolean(settings.paypalApplePayDomainFile) }, paymegate: { configured: Boolean(settings.paymegateApiKey && settings.paymegateWebhookSecret), enabled: settings.paymegateEnabled, logo: settings.paymegateLogo }, heleket: { configured: Boolean(settings.heleketMerchantId && settings.heleketPaymentApiKey), enabled: settings.heleketEnabled, merchantId: settings.heleketMerchantId, logo: settings.heleketLogo }, email: { configured: hasEmailTransport(settings), provider: settings.emailProvider, apiConfigured: Boolean(settings.brevoApiKey), smtp2goConfigured: Boolean(settings.smtp2goApiKey), resendConfigured: Boolean(settings.resendApiKey), smtpConfigured: Boolean(settings.smtpHost && settings.mailFrom), smtpSupported: true, host: settings.smtpHost, port: settings.smtpPort, providerName: settings.smtpProviderName, tlsMode: settings.smtpTlsMode, secure: settings.smtpSecure, user: settings.smtpUser, from: settings.mailFrom, templates: settings.emailTemplates }, supportEmail: settings.supportEmail, seo: publicSeoSettings(settings.seo) });
+  res.json({ paypal: { configured: Boolean(settings.paypalClientId && settings.paypalClientSecret), enabled: settings.paypalEnabled, walletButtonEnabled: settings.paypalWalletButtonEnabled, payLaterButtonEnabled: settings.paypalPayLaterButtonEnabled, cardButtonEnabled: settings.paypalCardButtonEnabled, mode: settings.paypalEnv, cardButtonText: settings.paypalCardButtonText || 'Visa', clientIdHint: settings.paypalClientId ? `••••${settings.paypalClientId.slice(-4)}` : '', logo: settings.paypalLogo, applePayDomainConfigured: Boolean(settings.paypalApplePayDomainFile) }, paymegate: { configured: Boolean(settings.paymegateApiKey && settings.paymegateWebhookSecret), enabled: settings.paymegateEnabled, logo: settings.paymegateLogo }, heleket: { configured: Boolean(settings.heleketMerchantId && settings.heleketPaymentApiKey), enabled: settings.heleketEnabled, merchantId: settings.heleketMerchantId, logo: settings.heleketLogo }, email: { configured: hasEmailTransport(settings), provider: settings.emailProvider, apiConfigured: Boolean(settings.brevoApiKey), smtp2goConfigured: Boolean(settings.smtp2goApiKey), resendConfigured: Boolean(settings.resendApiKey), smtpConfigured: Boolean(settings.smtpHost && settings.mailFrom), smtpSupported: true, host: settings.smtpHost, port: settings.smtpPort, providerName: settings.smtpProviderName, tlsMode: settings.smtpTlsMode, secure: settings.smtpSecure, user: settings.smtpUser, from: settings.mailFrom, templates: settings.emailTemplates }, supportEmail: settings.supportEmail, seo: publicSeoSettings(settings.seo) });
 }));
 app.post('/api/admin/cache/clear',requireAdmin,asyncRoute(async(req,res)=>{
   const cleared=usdRateCache.size;usdRateCache.clear();
@@ -566,6 +569,7 @@ app.put('/api/admin/settings', requireAdmin, asyncRoute(async (req, res) => {
   if (['sandbox','live'].includes(body.paypalEnv)) next.paypalEnv = body.paypalEnv;
   if (typeof body.paypalCardButtonText === 'string') { const label = body.paypalCardButtonText.trim().slice(0, 32); next.paypalCardButtonText = label || 'Visa'; }
   for (const key of ['paypalEnabled','paymegateEnabled','lemonSqueezyEnabled','heleketEnabled']) if (typeof body[key] === 'boolean') next[key] = body[key];
+  for (const key of ['paypalWalletButtonEnabled','paypalPayLaterButtonEnabled','paypalCardButtonEnabled']) if (typeof body[key] === 'boolean') next[key] = body[key];
   if (body.clearPaymegate === true) { next.paymegateApiKey = ''; next.paymegateWebhookSecret = ''; }
   if (body.clearHeleket === true) { next.heleketMerchantId = ''; next.heleketPaymentApiKey = ''; next.heleketEnabled = false; }
   if (body.clearLemonSqueezy === true) { next.lemonSqueezyApiKey = ''; next.lemonSqueezyStoreId = ''; next.lemonSqueezyVariantId = ''; next.lemonSqueezyWebhookSecret = ''; next.lemonSqueezyEnabled = false; }
@@ -1035,13 +1039,15 @@ app.post('/api/checkout', asyncRoute(async (req, res) => {
   const buyerName=String(buyer_name||'').trim();const buyerEmail=String(buyer_email||'').trim();
   if (requestedProvider && !['paypal','paymegate','heleket'].includes(requestedProvider)) return res.status(400).json({ error: 'Payment provider is not supported' });
   const provider = requestedProvider || 'paypal';
-  if(provider==='paypal'&&!['card','paypal','googlepay','applepay'].includes(paypalMethod)) return res.status(400).json({error:'PayPal payment method is not supported'});
+  if(provider==='paypal'&&!['card','paypal','paylater','googlepay','applepay'].includes(paypalMethod)) return res.status(400).json({error:'PayPal payment method is not supported'});
   const inputs = Array.isArray(req.body?.ticket_items) ? req.body.ticket_items : [{ ticket_type_id: req.body?.ticket_type_id, quantity: req.body?.quantity }];
   const requestedItems = inputs.map(item => ({ id: String(item.ticket_type_id || ''), quantity: Number(item.quantity) })).filter(item => item.quantity > 0);
   const totalQuantity = requestedItems.reduce((sum, item) => sum + item.quantity, 0);
   if (!buyerName || buyerName.length>160 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(buyerEmail) || buyerEmail.length>320 || !requestedItems.length || requestedItems.length > 20 || requestedItems.some(item => !item.id || !Number.isInteger(item.quantity) || item.quantity < 1 || item.quantity > 8) || totalQuantity > 8 || new Set(requestedItems.map(item=>item.id)).size !== requestedItems.length) return res.status(400).json({ error: 'تحقق من الاسم والبريد الإلكتروني الصحيح وأن مجموع التذاكر بين 1 و8.' });
   const settings = await getIntegrationSettings();
   if (provider === 'paypal' && (!settings.paypalEnabled || !settings.paypalClientId || !settings.paypalClientSecret)) return res.status(503).json({ error: 'PayPal غير مفعّل أو بياناته غير مُعدة بعد' });
+  if (provider === 'paypal' && !settings.paypalWalletButtonEnabled && !settings.paypalPayLaterButtonEnabled && !settings.paypalCardButtonEnabled) return res.status(503).json({ error: 'لا توجد وسيلة PayPal مفعّلة حاليًا.' });
+  if (provider === 'paypal' && ((paypalMethod === 'card' && !settings.paypalCardButtonEnabled) || (paypalMethod === 'paylater' && !settings.paypalPayLaterButtonEnabled) || (paypalMethod === 'paypal' && !settings.paypalWalletButtonEnabled))) return res.status(503).json({ error: 'وسيلة الدفع هذه غير مفعّلة حاليًا.' });
   if (provider === 'paymegate' && (!settings.paymegateEnabled || !settings.paymegateApiKey || !settings.paymegateWebhookSecret || !process.env.FRONTEND_ORIGIN?.startsWith('https://'))) return res.status(503).json({ error: 'Paymegate غير مفعّل أو غير مكتمل. أضف مفتاح API وسر Webhook واضبط FRONTEND_ORIGIN على عنوان HTTPS عام.' });
   if (provider === 'heleket' && (!settings.heleketEnabled || !settings.heleketMerchantId || !settings.heleketPaymentApiKey || !process.env.FRONTEND_ORIGIN?.startsWith('https://'))) return res.status(503).json({ error: 'Heleket is not enabled or its merchant credentials are incomplete.' });
   if (!hasEmailTransport(settings)) return res.status(503).json({ error: emailRuntimeError(settings) });
