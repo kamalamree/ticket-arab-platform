@@ -53,6 +53,11 @@ h1,h2,h3,h4{font-family:inherit;line-height:1.4}
 .card-fields-fallback>p{margin:0;color:#aeb8c4;font-size:13px;line-height:1.8}
 .card-fields-fallback #paypal-card-button-container,.card-fields-fallback #paypal-button-container{width:100%;min-height:48px;display:grid;align-items:center}
 .card-fields-fallback #paypal-card-button-container iframe,.card-fields-fallback #paypal-button-container iframe{max-width:100%!important}
+.card-fields-fallback .fallback-note{margin:0;color:#aeb8c4;font-size:13px;line-height:1.8}
+.paypal-funding-options{display:grid;grid-template-columns:minmax(0,1fr);gap:10px;width:100%;margin:8px 0}
+.paypal-funding-button{width:100%;min-width:0;min-height:42px;display:grid;align-items:center}
+.paypal-funding-button[hidden]{display:none}
+.paypal-funding-button iframe{max-width:100%!important}
 .paypal-wallet-options{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr));gap:12px;align-items:center;margin:12px 0 6px}
 .payment-alternatives{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr));gap:10px;align-items:center;margin:4px 0 2px}
 #paypal-button-container{grid-column:1/-1;min-height:44px;display:grid;align-items:center}
