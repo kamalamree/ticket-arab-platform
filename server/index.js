@@ -1035,7 +1035,7 @@ app.post('/api/checkout', asyncRoute(async (req, res) => {
   const buyerName=String(buyer_name||'').trim();const buyerEmail=String(buyer_email||'').trim();
   if (requestedProvider && !['paypal','paymegate','heleket'].includes(requestedProvider)) return res.status(400).json({ error: 'Payment provider is not supported' });
   const provider = requestedProvider || 'paypal';
-  if(provider==='paypal'&&!['card','paypal','googlepay','applepay','hosted_card'].includes(paypalMethod)) return res.status(400).json({error:'PayPal payment method is not supported'});
+  if(provider==='paypal'&&!['card','paypal','googlepay','applepay'].includes(paypalMethod)) return res.status(400).json({error:'PayPal payment method is not supported'});
   const inputs = Array.isArray(req.body?.ticket_items) ? req.body.ticket_items : [{ ticket_type_id: req.body?.ticket_type_id, quantity: req.body?.quantity }];
   const requestedItems = inputs.map(item => ({ id: String(item.ticket_type_id || ''), quantity: Number(item.quantity) })).filter(item => item.quantity > 0);
   const totalQuantity = requestedItems.reduce((sum, item) => sum + item.quantity, 0);
@@ -1093,25 +1093,14 @@ app.post('/api/checkout', asyncRoute(async (req, res) => {
       return res.json({provider:'heleket',checkout_url:checkoutUrl.href,invoice_token:invoiceToken,order_number:order.order_number,display_amount:order.total_amount,display_currency:order.currency,charge_amount:payment.amount,charge_currency:payment.currency,exchange_rate:fx.rate,exchange_rate_date:fx.date});
     }
     const pp = await paypalToken(settings);
-    const frontendOrigin = String(process.env.FRONTEND_ORIGIN || 'https://ticketarab.com').replace(/\/$/, '');
-    let tokenData = null;
-    if (paypalMethod !== 'hosted_card') {
-      const tokenResponse = await fetch(`${pp.base}/v1/identity/generate-token`, { method:'POST',headers:{Authorization:`Bearer ${pp.token}`,'Accept-Language':'en_US','Content-Type':'application/json'} });
-      tokenData = await tokenResponse.json();
-      if (!tokenResponse.ok || !tokenData.client_token) throw new Error('PayPal client token generation failed');
-    }
-    const checkoutReturnUrl=`${frontendOrigin}/checkout/card/${encodeURIComponent(listed[0].event_id)}?paypal_return=1`;
-    const paypalOrderBody={intent:'CAPTURE',...(paypalMethod==='card'?{payment_source:{card:{attributes:{verification:{method:'SCA_ALWAYS'}},experience_context:{shipping_preference:'NO_SHIPPING',return_url:checkoutReturnUrl,cancel_url:`${frontendOrigin}/checkout/card/${encodeURIComponent(listed[0].event_id)}?paypal_cancel=1`}}}}:{}),...(paypalMethod==='hosted_card'?{application_context:{brand_name:'Ticket Arab',user_action:'PAY_NOW',shipping_preference:'NO_SHIPPING',return_url:checkoutReturnUrl,cancel_url:`${frontendOrigin}/checkout/card/${encodeURIComponent(listed[0].event_id)}?paypal_cancel=1`}}:{}),purchase_units:[{reference_id:order.id,custom_id:String(order.id),amount:{currency_code:'USD',value:payment.amount},invoice_id:order.order_number,description:String(buyer_name).slice(0,100)}]};
+    const tokenResponse = await fetch(`${pp.base}/v1/identity/generate-token`, { method:'POST',headers:{Authorization:`Bearer ${pp.token}`,'Accept-Language':'en_US','Content-Type':'application/json'} });
+    const tokenData = await tokenResponse.json();
+    if (!tokenResponse.ok || !tokenData.client_token) throw new Error('PayPal client token generation failed');
+    const paypalOrderBody={intent:'CAPTURE',...(paypalMethod==='card'?{payment_source:{card:{attributes:{verification:{method:'SCA_ALWAYS'}},experience_context:{shipping_preference:'NO_SHIPPING'}}}}:{}),purchase_units:[{reference_id:order.id,custom_id:String(order.id),amount:{currency_code:'USD',value:payment.amount},invoice_id:order.order_number,description:String(buyer_name).slice(0,100)}]};
     const response = await fetch(`${pp.base}/v2/checkout/orders`, { method:'POST',headers:{Authorization:`Bearer ${pp.token}`,'Content-Type':'application/json'},body:JSON.stringify(paypalOrderBody) });
     const paypal = await response.json(); if (!response.ok) throw new Error(paypal.message || paypal.details?.map(detail => detail.description).filter(Boolean).join('; ') || paypal.name || 'PayPal rejected the order');
-    let approvalUrl='';
-    if (paypalMethod==='hosted_card') {
-      const actionLink=paypal.links?.find(link=>['payer-action','approve'].includes(link.rel));
-      try { const candidate=new URL(actionLink?.href||''); if(candidate.protocol==='https:'&&(/(^|\.)paypal\.com$/i.test(candidate.hostname))) approvalUrl=candidate.href; } catch {}
-      if(!approvalUrl) throw new Error('PayPal did not return a safe hosted checkout link');
-    }
     await pool.query("UPDATE payments SET provider_order_id=$1,status='created',updated_at=now() WHERE id=$2",[paypal.id,payment.id]);
-    res.json({order_id:order.id,order_number:order.order_number,payment_id:payment.id,paypal_order_id:paypal.id,approval_url:approvalUrl,client_id:settings.paypalClientId,client_token:tokenData?.client_token||'',paypal_sandbox:settings.paypalEnv!=='live',invoice_token:invoiceToken,display_amount:order.total_amount,display_currency:order.currency,usd_amount:payment.amount,exchange_rate:fx.rate,exchange_rate_date:fx.date});
+    res.json({order_id:order.id,order_number:order.order_number,payment_id:payment.id,paypal_order_id:paypal.id,client_id:settings.paypalClientId,client_token:tokenData.client_token,paypal_sandbox:settings.paypalEnv!=='live',invoice_token:invoiceToken,display_amount:order.total_amount,display_currency:order.currency,usd_amount:payment.amount,exchange_rate:fx.rate,exchange_rate_date:fx.date});
   } catch (err) { const providerError=String(err.message||err).slice(0,500); console.error(`${provider} checkout initialization failed:`,providerError); await failPayment(payment.id,providerError); const paymegateMessage=/EVM payout wallet/i.test(providerError)?'إعداد محفظة التاجر في Paymegate غير مكتمل: أضف عنوان محفظة EVM صالحًا لاستلام التسويات من لوحة Paymegate، ثم أعد المحاولة.':'تعذر إنشاء طلب الدفع لدى Paymegate. تحقّق من مفتاح API وإعدادات التاجر ثم حاول مجددًا.'; res.status(502).json({error:provider==='paymegate'?paymegateMessage:'تعذر بدء عملية الدفع. حاول مرة أخرى.'}); }
 }));
 app.post('/api/checkout/failure', asyncRoute(async (req,res) => {
