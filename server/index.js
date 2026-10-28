@@ -1102,7 +1102,7 @@ app.post('/api/checkout', asyncRoute(async (req, res) => {
     const tokenResponse = await fetch(`${pp.base}/v1/identity/generate-token`, { method:'POST',headers:{Authorization:`Bearer ${pp.token}`,'Accept-Language':'en_US','Content-Type':'application/json'} });
     const tokenData = await tokenResponse.json();
     if (!tokenResponse.ok || !tokenData.client_token) throw new Error('PayPal client token generation failed');
-    const paypalOrderBody={intent:'CAPTURE',...(paypalMethod==='card'?{payment_source:{card:{attributes:{verification:{method:'SCA_ALWAYS'}},experience_context:{shipping_preference:'NO_SHIPPING'}}}}:{}),purchase_units:[{reference_id:order.id,custom_id:String(order.id),amount:{currency_code:'USD',value:payment.amount},invoice_id:order.order_number,description:String(buyer_name).slice(0,100)}]};
+    const paypalOrderBody={intent:'CAPTURE',...(paypalMethod==='card'?{payment_source:{card:{attributes:{verification:{method:'SCA_WHEN_REQUIRED'}},experience_context:{shipping_preference:'NO_SHIPPING'}}}}:{}),purchase_units:[{reference_id:order.id,custom_id:String(order.id),amount:{currency_code:'USD',value:payment.amount},invoice_id:order.order_number,description:String(buyer_name).slice(0,100)}]};
     const response = await fetch(`${pp.base}/v2/checkout/orders`, { method:'POST',headers:{Authorization:`Bearer ${pp.token}`,'Content-Type':'application/json'},body:JSON.stringify(paypalOrderBody) });
     const paypal = await response.json(); if (!response.ok) throw new Error(paypal.message || paypal.details?.map(detail => detail.description).filter(Boolean).join('; ') || paypal.name || 'PayPal rejected the order');
     await pool.query("UPDATE payments SET provider_order_id=$1,status='created',updated_at=now() WHERE id=$2",[paypal.id,payment.id]);
@@ -1145,7 +1145,16 @@ app.post('/api/checkout/capture', asyncRoute(async (req, res) => {
     const walletSource=detail.payment_source?.paypal||detail.payment_source?.google_pay||detail.payment_source?.apple_pay;
     if(!cardSource&&!walletSource) throw new Error('PayPal did not confirm an approved card or wallet source');
     const liabilityShift=String(cardSource?.authentication_result?.liability_shift||walletSource?.card?.authentication_result?.liability_shift||'').toUpperCase();
-    if((cardSource||liabilityShift)&&['NO','UNKNOWN'].includes(liabilityShift)) throw new Error(`PayPal 3-D Secure liability shift was ${liabilityShift}`);
+    const threeDS=cardSource?.authentication_result?.three_d_secure;
+    const enrollment=String(threeDS?.enrollment_status||'').toUpperCase();
+    const authentication=String(threeDS?.authentication_status||'').toUpperCase();
+    const failedAuthentication=enrollment==='Y'&&['N','R','U','C'].includes(authentication);
+    const unresolvedAuthentication=liabilityShift==='UNKNOWN'||(liabilityShift==='NO'&&!['N','U','B'].includes(enrollment));
+    if(failedAuthentication||unresolvedAuthentication) {
+      const reason=`PayPal 3-D Secure was not approved (liability=${liabilityShift||'unspecified'}, enrollment=${enrollment||'unspecified'}, authentication=${authentication||'unspecified'})`;
+      await failPayment(pay.id,reason);
+      return res.status(402).json({error:'تعذر اعتماد البطاقة بعد التحقق الأمني. جرّب بطاقة أخرى أو تواصل مع البنك المُصدر.'});
+    }
 
     let capture=detail;
     if(detail.status!=='COMPLETED') {
