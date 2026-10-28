@@ -941,6 +941,10 @@ app.post(['/api/paymegate/webhook','/webhooks/paymegate'], asyncRoute(async(req,
   if(a.length!==b.length||!crypto.timingSafeEqual(a,b))return res.status(403).json({error:'Invalid Paymegate webhook signature'});
   const event=req.body;
   if(event?.type!=='order.paid'||event?.status!=='PAID'||!event.orderUUID||!event.externalId||!event.transactionUUID)return res.status(400).json({error:'Invalid paid-order event'});
+  // Paymegate's dashboard test event uses fixed sample identifiers and does
+  // not correspond to a locally-created checkout. Acknowledge it only after
+  // signature/timestamp validation, without creating a payment or tickets.
+  if(event.externalId==='test_invoice_0001'&&event.transactionRef==='test_transaction_reference')return res.status(200).json({received:true,test:true});
   const result=await completePaymegatePayment(String(event.externalId),String(event.orderUUID),event,eventId);
   if(result.notFound)return res.status(404).json({error:'Payment not found'});
   res.sendStatus(200);
