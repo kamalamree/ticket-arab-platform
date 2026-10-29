@@ -1136,15 +1136,17 @@ app.post('/api/checkout/capture', asyncRoute(async (req, res) => {
     const tokenHash=crypto.createHash('sha256').update(invoiceToken).digest('hex');
     if(!pay.invoice_token_hash||!crypto.timingSafeEqual(Buffer.from(tokenHash),Buffer.from(pay.invoice_token_hash))) return res.status(403).json({error:'Invalid checkout token'});
     if(pay.order_status==='paid') return res.json({success:true,order_number:orderNumber,invoice_token:invoiceToken});
-    if(pay.order_status!=='pending'||new Date(pay.expires_at)<=new Date()) {
-      await failPayment(pay.id,'Reservation expired before PayPal capture');
-      return res.status(409).json({error:'Reservation expired. Please start a new checkout.'});
-    }
+    if(pay.order_status!=='pending') return res.status(409).json({error:'Order is no longer pending. Contact support with your order number before paying again.'});
+    const reservationExpired=new Date(pay.expires_at)<=new Date();
 
     const settings=await getIntegrationSettings(); const pp=await paypalToken(settings);
     const detailResponse=await fetch(`${pp.base}/v2/checkout/orders/${encodeURIComponent(paypalId)}`,{headers:{Authorization:`Bearer ${pp.token}`} });
     const detail=await detailResponse.json();
     if(!detailResponse.ok) throw new Error(detail.message||'PayPal could not verify the payment');
+    if(reservationExpired&&detail.status!=='COMPLETED') {
+      await failPayment(pay.id,'Reservation expired before PayPal capture');
+      return res.status(409).json({error:'Reservation expired before payment was captured. Please start a new checkout.'});
+    }
     const cardSource=detail.payment_source?.card;
     const walletSource=detail.payment_source?.paypal||detail.payment_source?.google_pay||detail.payment_source?.apple_pay;
     if(!cardSource&&!walletSource) throw new Error('PayPal did not confirm an approved card or wallet source');
@@ -1166,13 +1168,23 @@ app.post('/api/checkout/capture', asyncRoute(async (req, res) => {
         method:'POST',headers:{Authorization:`Bearer ${pp.token}`,'Content-Type':'application/json','PayPal-Request-Id':String(pay.id)}
       });
       capture=await response.json();
-      if(!response.ok||capture.status!=='COMPLETED') {
+      if(!response.ok&&capture.status!=='PENDING') {
         await failPayment(pay.id,capture.message||'PayPal capture declined');
         return res.status(402).json({error:'Payment was not completed'});
       }
     }
-    capturedAtProvider=true;
     const captureRecord=capture.purchase_units?.[0]?.payments?.captures?.[0];
+    if(captureRecord?.status==='PENDING'||capture.status==='PENDING') {
+      await pool.query("UPDATE orders SET expires_at=GREATEST(expires_at,now()+interval '24 hours'),updated_at=now() WHERE id=$1 AND status='pending'",[pay.order_id]);
+      const reviewReason=String(captureRecord?.status_details?.reason||'').toUpperCase();
+      console.warn('PayPal capture is pending review:',{orderNumber,paymentId,reason:reviewReason||'PENDING'});
+      return res.status(503).json({error:reviewReason==='PENDING_REVIEW'?'يراجع PayPal التحصيل أمنيًا. لم يصلنا تأكيد نهائي ولم تصدر التذاكر. لا تعاود الدفع؛ راجع حساب PayPal أو تواصل مع دعم PayPal.':'تحصيل PayPal معلّق وينتظر تأكيد البوابة. لم تصدر التذاكر بعد؛ لا تعاود الدفع.'});
+    }
+    if(capture.status!=='COMPLETED'||!captureRecord||captureRecord.status!=='COMPLETED') {
+      await failPayment(pay.id,captureRecord?.status_details?.reason||'PayPal capture was not completed');
+      return res.status(402).json({error:'PayPal did not complete the capture. Contact support before trying another payment.'});
+    }
+    capturedAtProvider=true;
     const paidAmount=captureRecord?.amount||capture.purchase_units?.[0]?.amount;
     if(capture.status!=='COMPLETED'||(captureRecord&&captureRecord.status!=='COMPLETED')||!paidAmount||Number(paidAmount.value)!==Number(pay.amount)||String(paidAmount.currency_code).trim().toUpperCase()!==String(pay.currency).trim().toUpperCase()) {
       throw new Error('PayPal capture status, amount, or currency did not match the order');
