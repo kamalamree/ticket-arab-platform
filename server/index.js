@@ -1127,7 +1127,7 @@ app.post('/api/checkout/failure', asyncRoute(async (req,res) => {
 app.post('/api/checkout/capture', asyncRoute(async (req, res) => {
   const paypalId=String(req.body.paypal_order_id||''); const invoiceToken=String(req.body.invoice_token||'');
   if(!paypalId||invoiceToken.length<32) return res.status(400).json({error:'Payment reference is required'});
-  let captureAttempted=false; let capturedAtProvider=false; let paymentId; let orderNumber;
+  let capturedAtProvider=false; let paymentId; let orderNumber;
   try {
     // Never keep a Hyperdrive/Postgres transaction open while waiting for PayPal.
     const pay=(await pool.query('SELECT p.*,o.status order_status,o.order_number,o.expires_at,o.invoice_token_hash FROM payments p JOIN orders o ON o.id=p.order_id WHERE p.provider_order_id=$1 AND p.provider=$2',[paypalId,'paypal'])).rows[0];
@@ -1162,7 +1162,6 @@ app.post('/api/checkout/capture', asyncRoute(async (req, res) => {
 
     let capture=detail;
     if(detail.status!=='COMPLETED') {
-      captureAttempted=true;
       const response=await fetch(`${pp.base}/v2/checkout/orders/${encodeURIComponent(paypalId)}/capture`,{
         method:'POST',headers:{Authorization:`Bearer ${pp.token}`,'Content-Type':'application/json','PayPal-Request-Id':String(pay.id)}
       });
@@ -1203,11 +1202,20 @@ app.post('/api/checkout/capture', asyncRoute(async (req, res) => {
     const invoiceEmailSent=await sendInvoice(orderId).then(()=>true).catch(err=>{console.error('Invoice email failed:',err.message);return false;});
     return res.json({success:true,order_number:orderNumber,invoice_token:invoiceToken,invoice_email_sent:invoiceEmailSent,ticket_status:'waiting'});
   } catch(error) {
-    // A timeout can happen after PayPal captured the funds. Keep that order retryable
-    // and let a retried request reconcile PayPal's completed order before changing state.
-    if(paymentId&&!captureAttempted&&!capturedAtProvider) await failPayment(paymentId,error.message).catch(()=>{});
-    if(capturedAtProvider) console.error('PayPal captured payment needs local reconciliation:',{orderNumber,paymentId,error:String(error?.message||error).slice(0,300)});
-    throw error;
+    // A provider/network or local database error is ambiguous: PayPal may have
+    // completed the capture. Never cancel the reservation or mark the payment
+    // failed here; definitive declines are handled above. First reconcile the
+    // local state in case the transaction committed before the error surfaced.
+    if(paymentId) {
+      try {
+        const state=(await pool.query('SELECT p.status payment_status,o.status order_status FROM payments p JOIN orders o ON o.id=p.order_id WHERE p.id=$1',[paymentId])).rows[0];
+        if(state?.order_status==='paid'&&state.payment_status==='completed')return res.json({success:true,order_number:orderNumber,invoice_token:invoiceToken});
+      } catch(reconcileError) {
+        console.error('PayPal capture local reconciliation check failed:',String(reconcileError?.message||reconcileError).slice(0,300));
+      }
+    }
+    console.error(capturedAtProvider?'PayPal captured payment needs local reconciliation:':'PayPal capture state could not be confirmed:',{orderNumber,paymentId,error:String(error?.message||error).slice(0,300)});
+    return res.status(503).json({error:capturedAtProvider?'تأكّد PayPal اكتمال الدفع، لكن تحديث الطلب ما زال قيد المعالجة. لا تعاود الدفع؛ تواصل مع الدعم واذكر رقم طلبك.':'تعذر تأكيد حالة الدفع. لا تعاود الدفع حتى يتم التحقق من الطلب؛ تواصل مع الدعم واذكر رقم طلبك.'});
   }
 }));
 app.get('/api/invoices/:orderNumber.pdf', asyncRoute(async(req,res)=>{
