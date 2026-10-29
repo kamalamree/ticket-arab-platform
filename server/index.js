@@ -127,6 +127,7 @@ async function getIntegrationSettings() {
     paypalClientId: stored.paypalClientId || process.env.PAYPAL_CLIENT_ID || '',
     paypalClientSecret: stored.paypalClientSecret || process.env.PAYPAL_CLIENT_SECRET || '',
     paypalEnv: stored.paypalEnv || process.env.PAYPAL_ENV || 'sandbox',
+    paypalWebhookId: stored.paypalWebhookId || process.env.PAYPAL_WEBHOOK_ID || '',
     paypalCardButtonText: String(stored.paypalCardButtonText || 'Visa').trim().slice(0, 32) || 'Visa',
     paypalApplePayDomainFile: stored.paypalApplePayDomainFile || '',
     paypalEnabled: stored.paypalEnabled ?? true,
@@ -506,7 +507,7 @@ app.delete('/api/admin/events/:id', requireAdmin, asyncRoute(async (req, res) =>
 
 app.get('/api/admin/settings', requireAdmin, asyncRoute(async (_req, res) => {
   const settings = await getIntegrationSettings();
-  res.json({ paypal: { configured: Boolean(settings.paypalClientId && settings.paypalClientSecret), enabled: settings.paypalEnabled, walletButtonEnabled: settings.paypalWalletButtonEnabled, payLaterButtonEnabled: settings.paypalPayLaterButtonEnabled, cardButtonEnabled: settings.paypalCardButtonEnabled, mode: settings.paypalEnv, cardButtonText: settings.paypalCardButtonText || 'Visa', clientIdHint: settings.paypalClientId ? `••••${settings.paypalClientId.slice(-4)}` : '', logo: settings.paypalLogo, applePayDomainConfigured: Boolean(settings.paypalApplePayDomainFile) }, paymegate: { configured: Boolean(settings.paymegateApiKey && settings.paymegateWebhookSecret), enabled: settings.paymegateEnabled, logo: settings.paymegateLogo }, heleket: { configured: Boolean(settings.heleketMerchantId && settings.heleketPaymentApiKey), enabled: settings.heleketEnabled, merchantId: settings.heleketMerchantId, logo: settings.heleketLogo }, email: { configured: hasEmailTransport(settings), provider: settings.emailProvider, apiConfigured: Boolean(settings.brevoApiKey), smtp2goConfigured: Boolean(settings.smtp2goApiKey), resendConfigured: Boolean(settings.resendApiKey), smtpConfigured: Boolean(settings.smtpHost && settings.mailFrom), smtpSupported: true, host: settings.smtpHost, port: settings.smtpPort, providerName: settings.smtpProviderName, tlsMode: settings.smtpTlsMode, secure: settings.smtpSecure, user: settings.smtpUser, from: settings.mailFrom, templates: settings.emailTemplates }, supportEmail: settings.supportEmail, seo: publicSeoSettings(settings.seo) });
+  res.json({ paypal: { configured: Boolean(settings.paypalClientId && settings.paypalClientSecret), enabled: settings.paypalEnabled, walletButtonEnabled: settings.paypalWalletButtonEnabled, payLaterButtonEnabled: settings.paypalPayLaterButtonEnabled, cardButtonEnabled: settings.paypalCardButtonEnabled, mode: settings.paypalEnv, webhookId: settings.paypalWebhookId || '', webhookConfigured: Boolean(settings.paypalWebhookId), webhookUrl: 'https://ticket-arab-platform.kamalamr4544.workers.dev/webhooks/paypal', cardButtonText: settings.paypalCardButtonText || 'Visa', clientIdHint: settings.paypalClientId ? `••••${settings.paypalClientId.slice(-4)}` : '', logo: settings.paypalLogo, applePayDomainConfigured: Boolean(settings.paypalApplePayDomainFile) }, paymegate: { configured: Boolean(settings.paymegateApiKey && settings.paymegateWebhookSecret), enabled: settings.paymegateEnabled, logo: settings.paymegateLogo }, heleket: { configured: Boolean(settings.heleketMerchantId && settings.heleketPaymentApiKey), enabled: settings.heleketEnabled, merchantId: settings.heleketMerchantId, logo: settings.heleketLogo }, email: { configured: hasEmailTransport(settings), provider: settings.emailProvider, apiConfigured: Boolean(settings.brevoApiKey), smtp2goConfigured: Boolean(settings.smtp2goApiKey), resendConfigured: Boolean(settings.resendApiKey), smtpConfigured: Boolean(settings.smtpHost && settings.mailFrom), smtpSupported: true, host: settings.smtpHost, port: settings.smtpPort, providerName: settings.smtpProviderName, tlsMode: settings.smtpTlsMode, secure: settings.smtpSecure, user: settings.smtpUser, from: settings.mailFrom, templates: settings.emailTemplates }, supportEmail: settings.supportEmail, seo: publicSeoSettings(settings.seo) });
 }));
 app.post('/api/admin/cache/clear',requireAdmin,asyncRoute(async(req,res)=>{
   const cleared=usdRateCache.size;usdRateCache.clear();
@@ -535,6 +536,11 @@ app.post('/api/admin/data/transactions/clear',requireAdmin,asyncRoute(async(req,
 app.put('/api/admin/settings', requireAdmin, asyncRoute(async (req, res) => {
   const current = await getIntegrationSettings(); const body = req.body || {};
   const next = { ...current };
+  if(typeof body.paypalWebhookId==='string'){
+    const value=body.paypalWebhookId.trim();
+    if(value&&!/^[A-Za-z0-9]+$/.test(value))return res.status(400).json({error:'PayPal Webhook ID must contain letters and numbers only.'});
+    if(value)next.paypalWebhookId=value;
+  }
   if (body.seo && typeof body.seo === 'object' && !Array.isArray(body.seo)) {
     const value = body.seo;
     const siteName = String(value.siteName ?? current.seo.siteName).trim().slice(0, 100);
@@ -686,6 +692,35 @@ async function paypalToken(settings) {
   const auth = Buffer.from(`${settings.paypalClientId}:${settings.paypalClientSecret}`).toString('base64');
   const response = await fetch(`${base}/v1/oauth2/token`, { method: 'POST', headers: { Authorization: `Basic ${auth}`, 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'grant_type=client_credentials' });
   const data = await response.json(); if (!response.ok) throw new Error('PayPal authentication failed'); return { token: data.access_token, base };
+}
+async function finalizePayPalCapture(paypalOrderId, capture) {
+  const captureId=String(capture?.id||'');
+  const amount=capture?.amount;
+  if(capture?.status!=='COMPLETED'||!captureId||!amount)throw new Error('PayPal capture is not completed');
+  const client=await pool.connect();let orderId;let orderNumber;let alreadyPaid=false;
+  try{
+    await client.query('BEGIN');
+    const pay=(await client.query("SELECT p.id payment_id,p.order_id,p.amount,p.currency,p.status payment_status,o.status order_status,o.order_number,o.expires_at FROM payments p JOIN orders o ON o.id=p.order_id WHERE p.provider='paypal' AND p.provider_order_id=$1 FOR UPDATE OF p,o",[paypalOrderId])).rows[0];
+    if(!pay){await client.query('ROLLBACK');return {notFound:true};}
+    orderId=pay.order_id;orderNumber=pay.order_number;
+    if(Number(amount.value)!==Number(pay.amount)||String(amount.currency_code).toUpperCase()!==String(pay.currency).toUpperCase())throw new Error('PayPal capture amount/currency did not match');
+    if(pay.order_status==='paid'&&pay.payment_status==='completed'){alreadyPaid=true;await client.query('COMMIT');}
+    else {
+      if(pay.order_status!=='pending'||['failed','refunded'].includes(pay.payment_status))throw new Error('Completed PayPal capture has no active local order');
+      const items=(await client.query('SELECT oi.*,t.quantity_reserved,t.id ticket_type_id FROM order_items oi JOIN ticket_types t ON t.id=oi.ticket_type_id WHERE oi.order_id=$1 FOR UPDATE OF t',[orderId])).rows;
+      if(!items.length||items.some(item=>Number(item.quantity_reserved)<Number(item.quantity)))throw new Error('Reserved ticket inventory is unavailable for completed PayPal capture');
+      for(const item of items){
+        await client.query('UPDATE ticket_types SET quantity_sold=quantity_sold+$1,quantity_reserved=GREATEST(quantity_reserved-$1,0) WHERE id=$2',[item.quantity,item.ticket_type_id]);
+        for(let i=0;i<Number(item.quantity);i++)await client.query('INSERT INTO tickets(order_id,ticket_type_id,code) VALUES($1,$2,$3) ON CONFLICT DO NOTHING',[orderId,item.ticket_type_id,crypto.randomUUID()]);
+      }
+      await client.query("UPDATE orders SET status='paid',ticket_delivery_status='waiting',updated_at=now() WHERE id=$1",[orderId]);
+      await client.query("UPDATE payments SET status='completed',provider_capture_id=$1,updated_at=now() WHERE id=$2",[captureId,pay.payment_id]);
+      await client.query('COMMIT');
+    }
+  }catch(error){await client.query('ROLLBACK').catch(()=>{});throw error;}finally{await client.release();}
+  const invoiceSent=(await pool.query('SELECT invoice_sent_at FROM orders WHERE id=$1',[orderId])).rows[0]?.invoice_sent_at;
+  if(!invoiceSent)await sendInvoice(orderId).catch(error=>console.error('PayPal invoice email failed:',error.message));
+  return {orderId,orderNumber,alreadyPaid};
 }
 function drawInvoiceText(doc, value, x, y, options = {}) {
   const { size = 10, color = '#263445', maxWidth = 490, align = 'left' } = options;
@@ -1033,10 +1068,18 @@ app.post(['/api/lemonsqueezy/webhook','/webhooks/lemonsqueezy'],asyncRoute(async
   const result=await completeLemonSqueezyPayment(event);if(result.notFound)return res.status(404).json({error:'Payment not found'});return res.sendStatus(200);
 }));
 app.get('/api/checkout/status',asyncRoute(async(req,res)=>{
-  const number=String(req.query.order_number||'');const token=String(req.query.invoice_token||'');const provider=['paymegate','heleket','lemon_squeezy'].includes(String(req.query.provider))?String(req.query.provider):'paymegate';if(!number||token.length<32)return res.status(400).json({error:'Order reference is required'});
+  const number=String(req.query.order_number||'');const token=String(req.query.invoice_token||'');const provider=['paypal','paymegate','heleket','lemon_squeezy'].includes(String(req.query.provider))?String(req.query.provider):'paymegate';if(!number||token.length<32)return res.status(400).json({error:'Order reference is required'});
   const row=(await pool.query('SELECT o.status,o.order_number,o.total_amount,o.currency,o.invoice_token_hash,p.status payment_status FROM orders o JOIN payments p ON p.order_id=o.id WHERE o.order_number=$1 AND p.provider=$2 ORDER BY p.created_at DESC LIMIT 1',[number,provider])).rows[0];
   const hash=crypto.createHash('sha256').update(token).digest('hex');if(!row||!row.invoice_token_hash||!crypto.timingSafeEqual(Buffer.from(hash),Buffer.from(row.invoice_token_hash)))return res.status(404).json({error:'Order not found'});
-  res.json({status:row.status,payment_status:row.payment_status,order_number:row.order_number,invoice_token:token,total_amount:row.total_amount,currency:row.currency});
+  if(provider==='paypal'&&row.status==='pending'){
+    const payment=(await pool.query("SELECT p.provider_order_id,o.id order_id FROM payments p JOIN orders o ON o.id=p.order_id WHERE p.provider='paypal' AND o.order_number=$1 ORDER BY p.created_at DESC LIMIT 1",[number])).rows[0];
+    if(payment?.provider_order_id){
+      const settings=await getIntegrationSettings();const pp=await paypalToken(settings);const response=await fetch(`${pp.base}/v2/checkout/orders/${encodeURIComponent(payment.provider_order_id)}`,{headers:{Authorization:`Bearer ${pp.token}`},signal:AbortSignal.timeout(10000)});const detail=await response.json();
+      if(response.ok){const capture=detail.purchase_units?.[0]?.payments?.captures?.[0];if(capture?.status==='COMPLETED')await finalizePayPalCapture(payment.provider_order_id,capture);else if(capture?.status==='PENDING')await pool.query("UPDATE orders SET expires_at=GREATEST(expires_at,now()+interval '72 hours'),updated_at=now() WHERE id=$1 AND status='pending'",[payment.order_id]);}
+    }
+  }
+  const current=(await pool.query('SELECT o.status,o.order_number,o.total_amount,o.currency,p.status payment_status FROM orders o JOIN payments p ON p.order_id=o.id WHERE o.order_number=$1 AND p.provider=$2 ORDER BY p.created_at DESC LIMIT 1',[number,provider])).rows[0];
+  res.json({status:current.status,payment_status:current.payment_status,order_number:current.order_number,invoice_token:token,total_amount:current.total_amount,currency:current.currency});
 }));
 app.post('/api/checkout', asyncRoute(async (req, res) => {
   const { buyer_name, buyer_email, buyer_phone } = req.body || {}; const requestedProvider = req.body?.provider; const paypalMethod=String(req.body?.paypal_method||'card');
@@ -1175,7 +1218,7 @@ app.post('/api/checkout/capture', asyncRoute(async (req, res) => {
     }
     const captureRecord=capture.purchase_units?.[0]?.payments?.captures?.[0];
     if(captureRecord?.status==='PENDING'||capture.status==='PENDING') {
-      await pool.query("UPDATE orders SET expires_at=GREATEST(expires_at,now()+interval '24 hours'),updated_at=now() WHERE id=$1 AND status='pending'",[pay.order_id]);
+      await pool.query("UPDATE orders SET expires_at=GREATEST(expires_at,now()+interval '72 hours'),updated_at=now() WHERE id=$1 AND status='pending'",[pay.order_id]);
       const reviewReason=String(captureRecord?.status_details?.reason||'').toUpperCase();
       console.warn('PayPal capture is pending review:',{orderNumber,paymentId,reason:reviewReason||'PENDING'});
       return res.status(503).json({error:reviewReason==='PENDING_REVIEW'?'يراجع PayPal التحصيل أمنيًا. لم يصلنا تأكيد نهائي ولم تصدر التذاكر. لا تعاود الدفع؛ راجع حساب PayPal أو تواصل مع دعم PayPal.':'تحصيل PayPal معلّق وينتظر تأكيد البوابة. لم تصدر التذاكر بعد؛ لا تعاود الدفع.'});
@@ -1190,29 +1233,10 @@ app.post('/api/checkout/capture', asyncRoute(async (req, res) => {
       throw new Error('PayPal capture status, amount, or currency did not match the order');
     }
 
-    const client=await pool.connect(); let orderId;
-    try {
-      await client.query('BEGIN');
-      const locked=(await client.query('SELECT p.id,p.order_id,p.status payment_status,o.status order_status,o.order_number,o.invoice_token_hash FROM payments p JOIN orders o ON o.id=p.order_id WHERE p.provider=$1 AND p.provider_order_id=$2 FOR UPDATE OF p,o',['paypal',paypalId])).rows[0];
-      if(!locked) { await client.query('ROLLBACK'); return res.status(404).json({error:'Payment not found'}); }
-      const lockedHash=crypto.createHash('sha256').update(invoiceToken).digest('hex');
-      if(!locked.invoice_token_hash||!crypto.timingSafeEqual(Buffer.from(lockedHash),Buffer.from(locked.invoice_token_hash))) { await client.query('ROLLBACK'); return res.status(403).json({error:'Invalid checkout token'}); }
-      orderId=locked.order_id; orderNumber=locked.order_number;
-      if(locked.order_status==='paid') { await client.query('COMMIT'); return res.json({success:true,order_number:orderNumber,invoice_token:invoiceToken}); }
-      if(locked.order_status!=='pending'||['failed','refunded'].includes(locked.payment_status)) throw new Error('Captured PayPal payment is not in a fulfillable local state');
-      const items=(await client.query('SELECT oi.*,t.quantity_reserved,t.id ticket_type_id FROM order_items oi JOIN ticket_types t ON t.id=oi.ticket_type_id WHERE oi.order_id=$1 FOR UPDATE OF t',[orderId])).rows;
-      if(!items.length||items.some(item=>Number(item.quantity_reserved)<Number(item.quantity))) throw new Error('Inventory reservation unavailable after PayPal capture');
-      for(const item of items) {
-        await client.query('UPDATE ticket_types SET quantity_sold=quantity_sold+$1,quantity_reserved=GREATEST(quantity_reserved-$1,0) WHERE id=$2',[item.quantity,item.ticket_type_id]);
-        for(let i=0;i<Number(item.quantity);i++) await client.query('INSERT INTO tickets(order_id,ticket_type_id,code) VALUES($1,$2,$3)',[orderId,item.ticket_type_id,crypto.randomUUID()]);
-      }
-      await client.query("UPDATE orders SET status='paid',ticket_delivery_status='waiting',updated_at=now() WHERE id=$1",[orderId]);
-      await client.query("UPDATE payments SET status='completed',provider_capture_id=$1,updated_at=now() WHERE id=$2",[captureRecord?.id||null,locked.id]);
-      await client.query('COMMIT');
-    } catch(error) { await client.query('ROLLBACK').catch(()=>{}); throw error; }
-    finally { await client.release(); }
-    const invoiceEmailSent=await sendInvoice(orderId).then(()=>true).catch(err=>{console.error('Invoice email failed:',err.message);return false;});
-    return res.json({success:true,order_number:orderNumber,invoice_token:invoiceToken,invoice_email_sent:invoiceEmailSent,ticket_status:'waiting'});
+    const finalized=await finalizePayPalCapture(paypalId,captureRecord);
+    if(finalized.notFound)return res.status(404).json({error:'Payment not found'});
+    const invoiceEmailSent=(await pool.query('SELECT invoice_sent_at FROM orders WHERE id=$1',[finalized.orderId])).rows[0]?.invoice_sent_at!=null;
+    return res.json({success:true,order_number:finalized.orderNumber,invoice_token:invoiceToken,invoice_email_sent:invoiceEmailSent,ticket_status:'waiting'});
   } catch(error) {
     // A provider/network or local database error is ambiguous: PayPal may have
     // completed the capture. Never cancel the reservation or mark the payment
@@ -1229,6 +1253,34 @@ app.post('/api/checkout/capture', asyncRoute(async (req, res) => {
     console.error(capturedAtProvider?'PayPal captured payment needs local reconciliation:':'PayPal capture state could not be confirmed:',{orderNumber,paymentId,error:String(error?.message||error).slice(0,300)});
     return res.status(503).json({error:capturedAtProvider?'تأكّد PayPal اكتمال الدفع، لكن تحديث الطلب ما زال قيد المعالجة. لا تعاود الدفع؛ تواصل مع الدعم واذكر رقم طلبك.':'تعذر تأكيد حالة الدفع. لا تعاود الدفع حتى يتم التحقق من الطلب؛ تواصل مع الدعم واذكر رقم طلبك.'});
   }
+}));
+app.post(['/webhooks/paypal','/api/paypal/webhook'],asyncRoute(async(req,res)=>{
+  const settings=await getIntegrationSettings();const event=req.body||{};const webhookId=settings.paypalWebhookId;
+  if(!webhookId||!settings.paypalClientId||!settings.paypalClientSecret)return res.status(503).json({error:'PayPal webhook is not configured'});
+  const pp=await paypalToken(settings);const verification={auth_algo:req.get('paypal-auth-algo'),cert_url:req.get('paypal-cert-url'),transmission_id:req.get('paypal-transmission-id'),transmission_sig:req.get('paypal-transmission-sig'),transmission_time:req.get('paypal-transmission-time'),webhook_id:webhookId,webhook_event:event};
+  if(Object.values(verification).some(value=>!value))return res.status(400).json({error:'PayPal signature headers are incomplete'});
+  const verifyResponse=await fetch(`${pp.base}/v1/notifications/verify-webhook-signature`,{method:'POST',headers:{Authorization:`Bearer ${pp.token}`,'Content-Type':'application/json'},body:JSON.stringify(verification),signal:AbortSignal.timeout(10000)});
+  const verified=await verifyResponse.json();if(!verifyResponse.ok||verified.verification_status!=='SUCCESS')return res.status(403).json({error:'Invalid PayPal webhook signature'});
+  const eventId=String(event.id||'');const eventType=String(event.event_type||'');const resource=event.resource||{};
+  if(!eventId||!eventType)return res.status(400).json({error:'PayPal event identifier is missing'});
+  const related=resource.supplementary_data?.related_ids||{};let paypalOrderId=String(related.order_id||'');
+  if(!paypalOrderId){const up=(resource.links||[]).find(link=>link.rel==='up')?.href||'';paypalOrderId=String(up.match(/\/v2\/checkout\/orders\/([^/?]+)/)?.[1]||'');}
+  const known=['PAYMENT.CAPTURE.PENDING','PAYMENT.CAPTURE.COMPLETED','PAYMENT.CAPTURE.DENIED'].includes(eventType);
+  if(known&&paypalOrderId){
+    const pay=(await pool.query("SELECT p.id payment_id,p.order_id,o.status order_status,o.expires_at FROM payments p JOIN orders o ON o.id=p.order_id WHERE p.provider='paypal' AND p.provider_order_id=$1",[paypalOrderId])).rows[0];
+    if(pay&&eventType==='PAYMENT.CAPTURE.PENDING'&&pay.order_status==='pending'){
+      await pool.query("UPDATE orders SET expires_at=GREATEST(expires_at,now()+interval '72 hours'),updated_at=now() WHERE id=$1 AND status='pending'",[pay.order_id]);
+      if(resource.id)await pool.query("UPDATE payments SET provider_capture_id=$1,updated_at=now() WHERE id=$2 AND status<>'completed'",[String(resource.id),pay.payment_id]);
+    }else if(pay&&eventType==='PAYMENT.CAPTURE.COMPLETED'){
+      const captureResponse=await fetch(`${pp.base}/v2/payments/captures/${encodeURIComponent(String(resource.id||''))}`,{headers:{Authorization:`Bearer ${pp.token}`},signal:AbortSignal.timeout(10000)});const capture=await captureResponse.json();
+      if(!captureResponse.ok||capture.status!=='COMPLETED')return res.status(503).json({error:'PayPal capture is not yet confirmed'});
+      const result=await finalizePayPalCapture(paypalOrderId,capture);if(result.notFound)return res.status(200).json({received:true,unmatched:true});
+    }else if(pay&&eventType==='PAYMENT.CAPTURE.DENIED'&&pay.order_status==='pending'){
+      const client=await pool.connect();try{await client.query('BEGIN');const locked=(await client.query("SELECT p.id,p.order_id,o.status FROM payments p JOIN orders o ON o.id=p.order_id WHERE p.provider='paypal' AND p.provider_order_id=$1 FOR UPDATE OF p,o",[paypalOrderId])).rows[0];if(locked?.status==='pending'){await client.query("UPDATE payments SET status='failed',failure_reason='PayPal capture denied',updated_at=now() WHERE id=$1",[locked.id]);await client.query('UPDATE ticket_types t SET quantity_reserved=GREATEST(t.quantity_reserved-oi.quantity,0) FROM order_items oi WHERE oi.order_id=$1 AND t.id=oi.ticket_type_id',[locked.order_id]);await client.query("UPDATE orders SET status='cancelled',updated_at=now() WHERE id=$1",[locked.order_id]);}await client.query('COMMIT');}catch(error){await client.query('ROLLBACK').catch(()=>{});throw error;}finally{await client.release();}
+    }
+  }
+  await pool.query('INSERT INTO payment_webhook_events(provider,event_id,order_uuid,transaction_uuid) VALUES($1,$2,$3,$4) ON CONFLICT(provider,event_id) DO NOTHING',['paypal',eventId,eventType,String(resource.id||paypalOrderId||'')]);
+  res.status(200).json({received:true});
 }));
 app.get('/api/invoices/:orderNumber.pdf', asyncRoute(async(req,res)=>{
   const token=String(req.query.t||'');const rows=(await pool.query("SELECT id,invoice_token_hash FROM orders WHERE order_number=$1 AND status='paid'",[req.params.orderNumber])).rows;if(!rows[0]||!rows[0].invoice_token_hash||token.length<32)return res.status(404).send('Invoice not found');const a=Buffer.from(crypto.createHash('sha256').update(token).digest('hex'));const b=Buffer.from(rows[0].invoice_token_hash);if(a.length!==b.length||!crypto.timingSafeEqual(a,b))return res.status(404).send('Invoice not found');const {order}=await loadInvoiceData(rows[0].id);const {pdf,sha256}=await getOrCreateInvoicePdf(rows[0].id);res.setHeader('Content-Type','application/pdf');res.setHeader('Content-Disposition',`attachment; filename="invoice-${order.order_number}.pdf"`);res.setHeader('Cache-Control','no-store');res.setHeader('X-Content-SHA256',sha256);res.send(pdf);
